@@ -5,7 +5,7 @@ export PATH="$HOME/.lmstudio/bin:$PATH"
 [[ -f ~/.zshrc ]] && source ~/.zshrc
 
 # --- CONFIGURATION ---
-REAL_MODEL="qwen3.6-35b-a3b"
+REAL_MODEL="mistralai_devstral-small-2-24b-instruct-2512-mlx"
 LM_STUDIO_PORT=1234
 PROXY_PORT=8082
 PROXY_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -13,7 +13,7 @@ PROXY_DIR="$(cd "$(dirname "$0")" && pwd)"
 # --- 1. START LM STUDIO ---
 echo "⚙️  Initializing LM Studio..."
 lms daemon up
-lms load "$REAL_MODEL" --gpu 1.0 --yes
+lms load "$REAL_MODEL" --gpu 1.0 --context-length 65536 --yes
 lms server start --port $LM_STUDIO_PORT
 
 # --- 2. START CLAUDEPROXY ---
@@ -37,7 +37,7 @@ export ANTHROPIC_CUSTOM_MODEL_OPTION="$REAL_MODEL"
 # --- 4. LAUNCH ---
 echo "🚀 Launching Claude Code (M4 Optimized)..."
 if command -v claude &> /dev/null; then
-    claude
+    claude --debug
 else
     open -a "Claude" .
 fi
