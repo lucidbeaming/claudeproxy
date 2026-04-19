@@ -1,6 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(express.json({ limit: '10mb' }));
@@ -8,6 +10,38 @@ app.use(express.json({ limit: '10mb' }));
 const LM_STUDIO_URL = process.env.LM_STUDIO_URL || 'http://localhost:1234';
 const PORT = process.env.PORT || 8082;
 const MODEL_OVERRIDE = process.env.MODEL_OVERRIDE;
+
+// --- File-based logger ---
+const LOG_DIR = process.env.LOG_DIR || path.join(__dirname, 'logs');
+if (!fs.existsSync(LOG_DIR)) fs.mkdirSync(LOG_DIR, { recursive: true });
+
+const logFile = path.join(LOG_DIR, `proxy-${new Date().toISOString().replace(/[:.]/g, '-')}.log`);
+const logStream = fs.createWriteStream(logFile, { flags: 'a' });
+
+function log(level, ...args) {
+  const ts = new Date().toISOString();
+  const line = `[${ts}] [${level}] ${args.map(a => typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)).join(' ')}`;
+  logStream.write(line + '\n');
+  if (level === 'ERROR') process.stderr.write(line + '\n');
+  else process.stdout.write(line + '\n');
+}
+
+log('INFO', `claudeproxy log file: ${logFile}`);
+
+// Convert a single Anthropic content block to a plain text string
+function blockToText(block) {
+  if (block.type === 'text') return block.text;
+  if (block.type === 'tool_use') {
+    return `[Tool call: ${block.name}]\nInput: ${JSON.stringify(block.input, null, 2)}`;
+  }
+  if (block.type === 'tool_result') {
+    const inner = Array.isArray(block.content)
+      ? block.content.map(b => b.type === 'text' ? b.text : '').join('')
+      : (block.content || '');
+    return `[Tool result]\nOutput: ${inner}`;
+  }
+  return '';
+}
 
 // Anthropic request → OpenAI request
 function toOpenAIRequest(body) {
@@ -23,7 +57,7 @@ function toOpenAIRequest(body) {
   for (const msg of body.messages) {
     const content = typeof msg.content === 'string'
       ? msg.content
-      : msg.content.map(b => b.type === 'text' ? b.text : '').join('');
+      : msg.content.map(blockToText).filter(Boolean).join('\n');
     messages.push({ role: msg.role, content });
   }
 
@@ -58,16 +92,36 @@ function toAnthropicResponse(openai, model) {
   };
 }
 
+// Extract a human-readable error message from LM Studio error responses
+function lmStudioErrMsg(err) {
+  const data = err.response?.data;
+  if (!data) return null;
+  const msg = (typeof data === 'object' ? data?.error?.message : null) || null;
+  if (!msg) return null;
+  if (msg.includes('No models loaded')) {
+    return 'LM Studio has no model loaded. The model may have crashed — reload it in LM Studio and try again.';
+  }
+  return msg;
+}
+
 function sendSSE(res, event, data) {
+  log('SSE', `→ event:${event}`, data);
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
 app.post('/v1/messages', async (req, res) => {
   const body = req.body;
+  const reqId = `req_${Date.now()}`;
+
+  log('INFO', `[${reqId}] POST /v1/messages | stream:${body.stream} | model:${body.model} | messages:${body.messages?.length}`);
+  log('DEBUG', `[${reqId}] request headers:`, req.headers);
+  log('DEBUG', `[${reqId}] request body:`, body);
+
   const openaiBody = toOpenAIRequest(body);
   const targetUrl = `${LM_STUDIO_URL}/v1/chat/completions`;
 
-  console.log(`→ ${body.stream ? 'stream' : 'sync'} | model: ${openaiBody.model} | messages: ${openaiBody.messages.length}`);
+  log('INFO', `[${reqId}] forwarding to ${targetUrl} | openai model:${openaiBody.model}`);
+  log('DEBUG', `[${reqId}] openai request body:`, openaiBody);
 
   if (openaiBody.stream) {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -99,26 +153,59 @@ app.post('/v1/messages', async (req, res) => {
     sendSSE(res, 'ping', { type: 'ping' });
 
     try {
+      log('INFO', `[${reqId}] opening upstream stream...`);
       const upstream = await axios.post(targetUrl, openaiBody, {
         responseType: 'stream',
         headers: { 'Content-Type': 'application/json' },
       });
+      log('INFO', `[${reqId}] upstream connected | status:${upstream.status}`);
+      log('DEBUG', `[${reqId}] upstream response headers:`, upstream.headers);
 
       let buffer = '';
       let outputTokens = 0;
+      let chunkCount = 0;
+      let currentEvent = null;
+      let upstreamErrored = false;
 
       upstream.data.on('data', (chunk) => {
-        buffer += chunk.toString();
+        const raw = chunk.toString();
+        chunkCount++;
+        log('DEBUG', `[${reqId}] upstream chunk #${chunkCount} (${raw.length} bytes):`, raw);
+
+        buffer += raw;
         const lines = buffer.split('\n');
         buffer = lines.pop();
 
         for (const line of lines) {
+          log('DEBUG', `[${reqId}] upstream line: ${JSON.stringify(line)}`);
+
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim();
+            continue;
+          }
+
           if (!line.startsWith('data: ')) continue;
-          const raw = line.slice(6).trim();
-          if (raw === '[DONE]') continue;
+          const payload = line.slice(6).trim();
+
+          if (currentEvent === 'error') {
+            let errMsg = payload;
+            try { errMsg = JSON.parse(payload)?.error?.message || payload; } catch {}
+            log('ERROR', `[${reqId}] upstream error event: ${errMsg}`);
+            upstreamErrored = true;
+            sendSSE(res, 'error', { type: 'error', error: { type: 'api_error', message: errMsg } });
+            currentEvent = null;
+            continue;
+          }
+          currentEvent = null;
+
+          if (payload === '[DONE]') {
+            log('INFO', `[${reqId}] upstream [DONE] received`);
+            continue;
+          }
 
           try {
-            const parsed = JSON.parse(raw);
+            const parsed = JSON.parse(payload);
+            log('DEBUG', `[${reqId}] parsed chunk:`, parsed);
             const delta = parsed.choices?.[0]?.delta?.content;
             if (delta) {
               outputTokens++;
@@ -127,30 +214,48 @@ app.post('/v1/messages', async (req, res) => {
                 index: 0,
                 delta: { type: 'text_delta', text: delta },
               });
+            } else {
+              log('DEBUG', `[${reqId}] chunk had no delta content. finish_reason:${parsed.choices?.[0]?.finish_reason}`);
             }
-          } catch (_) {}
+          } catch (parseErr) {
+            log('ERROR', `[${reqId}] failed to parse chunk payload: ${JSON.stringify(payload)} | err:${parseErr.message}`);
+          }
         }
       });
 
       upstream.data.on('end', () => {
-        sendSSE(res, 'content_block_stop', { type: 'content_block_stop', index: 0 });
-        sendSSE(res, 'message_delta', {
-          type: 'message_delta',
-          delta: { stop_reason: 'end_turn', stop_sequence: null },
-          usage: { output_tokens: outputTokens },
-        });
-        sendSSE(res, 'message_stop', { type: 'message_stop' });
+        log('INFO', `[${reqId}] upstream stream ended | total chunks:${chunkCount} | output_tokens:${outputTokens}`);
+        if (!upstreamErrored) {
+          sendSSE(res, 'content_block_stop', { type: 'content_block_stop', index: 0 });
+          sendSSE(res, 'message_delta', {
+            type: 'message_delta',
+            delta: { stop_reason: 'end_turn', stop_sequence: null },
+            usage: { output_tokens: outputTokens },
+          });
+          sendSSE(res, 'message_stop', { type: 'message_stop' });
+        }
         res.end();
+        log('INFO', `[${reqId}] response ended`);
       });
 
       upstream.data.on('error', (err) => {
-        console.error('Stream error:', err.message);
+        log('ERROR', `[${reqId}] upstream stream error: ${err.message}`, err.stack);
         res.end();
       });
 
+      res.on('close', () => {
+        log('INFO', `[${reqId}] client disconnected`);
+      });
+
     } catch (err) {
-      console.error('Upstream error:', err.message);
-      sendSSE(res, 'error', { type: 'error', error: { type: 'api_error', message: err.message } });
+      log('ERROR', `[${reqId}] upstream request failed: ${err.message}`);
+      log('ERROR', `[${reqId}] error stack:`, err.stack);
+      if (err.response) {
+        log('ERROR', `[${reqId}] upstream response status:${err.response.status} | headers:`, err.response.headers);
+        log('ERROR', `[${reqId}] upstream response data:`, err.response.data);
+      }
+      const errMsg = lmStudioErrMsg(err) || err.message;
+      sendSSE(res, 'error', { type: 'error', error: { type: 'api_error', message: errMsg } });
       res.end();
     }
 
@@ -159,21 +264,41 @@ app.post('/v1/messages', async (req, res) => {
       const upstream = await axios.post(targetUrl, openaiBody, {
         headers: { 'Content-Type': 'application/json' },
       });
-      res.json(toAnthropicResponse(upstream.data, body.model));
+      log('INFO', `[${reqId}] sync response | status:${upstream.status}`);
+      log('DEBUG', `[${reqId}] upstream sync response:`, upstream.data);
+      const anthropicResp = toAnthropicResponse(upstream.data, body.model);
+      log('DEBUG', `[${reqId}] anthropic response:`, anthropicResp);
+      res.json(anthropicResp);
     } catch (err) {
-      console.error('Upstream error:', err.message);
-      res.status(err.response?.status || 500).json({
+      log('ERROR', `[${reqId}] sync upstream error: ${err.message}`);
+      log('ERROR', `[${reqId}] error stack:`, err.stack);
+      if (err.response) {
+        log('ERROR', `[${reqId}] upstream response status:${err.response.status}`);
+        log('ERROR', `[${reqId}] upstream response data:`, err.response.data);
+      }
+      const errMsg = lmStudioErrMsg(err) || err.message;
+      res.status(503).json({
         type: 'error',
-        error: { type: 'api_error', message: err.message },
+        error: { type: 'api_error', message: errMsg },
       });
     }
   }
 });
 
-app.get('/health', (_, res) => res.json({ status: 'ok', upstream: LM_STUDIO_URL }));
+app.get('/health', (_, res) => {
+  log('INFO', 'GET /health');
+  res.json({ status: 'ok', upstream: LM_STUDIO_URL, logFile });
+});
+
+// Log all unmatched routes
+app.use((req, res) => {
+  log('WARN', `unmatched route: ${req.method} ${req.path}`);
+  res.status(404).json({ error: 'not found' });
+});
 
 app.listen(PORT, '127.0.0.1', () => {
-  console.log(`claudeproxy listening on http://localhost:${PORT}`);
-  console.log(`forwarding to LM Studio at ${LM_STUDIO_URL}`);
-  if (MODEL_OVERRIDE) console.log(`model override: ${MODEL_OVERRIDE}`);
+  log('INFO', `claudeproxy listening on http://localhost:${PORT}`);
+  log('INFO', `forwarding to LM Studio at ${LM_STUDIO_URL}`);
+  if (MODEL_OVERRIDE) log('INFO', `model override: ${MODEL_OVERRIDE}`);
+  log('INFO', `logging to: ${logFile}`);
 });
