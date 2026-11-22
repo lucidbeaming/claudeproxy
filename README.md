@@ -21,7 +21,7 @@ Claude Code  →  claudeproxy :8082  →  LM Studio :1234
 
 ## Requirements
 
-- Node.js 18+
+- Node.js 20+
 - [LM Studio](https://lmstudio.ai) running locally with a model loaded and the local server enabled
 
 ## Installation
