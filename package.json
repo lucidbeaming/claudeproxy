@@ -2,7 +2,7 @@
   "name": "claudeproxy",
   "version": "1.0.0",
   "description": "",
-  "license": "ISC",
+  "license": "MIT",
   "author": "",
   "type": "commonjs",
   "main": "index.js",
@@ -18,5 +18,13 @@
     "axios": "^1.21.1",
     "dotenv": "^18.0.10",
     "express": "^5.3.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lucidbeaming/claudeproxy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lucidbeaming/claudeproxy/issues"
+  },
+  "homepage": "https://joshuacurry.dev/"
 }
