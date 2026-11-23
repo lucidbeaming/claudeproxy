@@ -2,10 +2,14 @@
 
 Local proxy translating Anthropic Messages API ↔ OpenAI chat for LM Studio.
 
-> [!NOTE]
-> **LM Studio 0.4.1 and later don't need this proxy.** Since January 2026, LM Studio serves an Anthropic-compatible `/v1/messages` endpoint itself, with tool use, so Claude Code can point `ANTHROPIC_BASE_URL` straight at it. See LM Studio's [Claude Code guide](https://lmstudio.ai/docs/integrations/claude-code). claudeproxy remains useful for older LM Studio versions and as a compact reference for the Anthropic ↔ OpenAI mapping (#9).
+> **Retired.** claudeproxy was an early bridge for running Claude Code against local models, from before the local servers supported it themselves. Both targets now do it natively, with tool use, which this proxy never passed through:
+>
+> - **LM Studio 0.4.1+** (January 2026): point `ANTHROPIC_BASE_URL` at the LM Studio server. See LM Studio's [Claude Code guide](https://lmstudio.ai/docs/integrations/claude-code).
+> - **Ollama 0.14.0+** (January 2026): set `ANTHROPIC_BASE_URL=http://localhost:11434`, or run `ollama launch claude`. See Ollama's [Claude Code guide](https://docs.ollama.com/integrations/claude-code).
+>
+> The code is kept for reference, as a compact example of mapping the Anthropic Messages API to OpenAI chat completions, including streaming (#9).
 
-A lightweight local proxy that lets Claude Code (or any Anthropic API client) run against a local model served by [LM Studio](https://lmstudio.ai) on a MacBook.
+A lightweight local proxy that lets Claude Code (or any Anthropic API client) run against a local model served by [LM Studio](https://lmstudio.ai) on a MacBook. It also works with [Ollama](https://ollama.com), which serves the same OpenAI-compatible endpoint (`LM_STUDIO_URL=http://localhost:11434`).
 
 Claude sends and receives the Anthropic message format. LM Studio speaks the OpenAI chat completions format. This proxy sits between them and translates both directions — including streaming SSE.
 

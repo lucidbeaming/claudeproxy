@@ -5,6 +5,7 @@ All notable changes to this project are documented here. The format follows [Kee
 ## [Unreleased]
 
 ### Added
+- README: "Retired" notice. LM Studio 0.4.1+ and Ollama 0.14.0+ serve Claude Code natively; note that Ollama also works as a backend (#9)
 - README: notice that LM Studio 0.4.1+ serves `/v1/messages` natively, translation limits, configuration table, `claude-local.sh`, How it works, troubleshooting via `LOGS.md` (#10)
 - MIT license (#5)
 - Package metadata: `repository`, `bugs` and `homepage` in `package.json` (#5)
