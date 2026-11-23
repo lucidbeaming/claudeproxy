@@ -7,7 +7,9 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 - MIT license (#5)
 - Package metadata: `repository`, `bugs` and `homepage` in `package.json` (#5)
+
 ### Changed
+- `.gitignore`: all `.env.*` variants (keeping `.env.example`), Sublime workspaces, shared `.vscode/extensions.json` (#7)
 - express 5.3, axios 1.21, dotenv 18 (#3)
 - Requires Node 20 or newer (`engines.node`, README) (#3)
 
