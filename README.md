@@ -92,3 +92,7 @@ The test suite covers:
 - **Connectivity** — server reachable, returns JSON
 - **Model metadata** — OpenAI-compatible response shape, required fields, prints loaded model IDs
 - **Inference** — non-streaming response + token counts, streaming SSE chunks and `[DONE]` terminator
+
+## License
+
+[MIT](LICENSE).
